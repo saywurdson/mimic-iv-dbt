@@ -1,0 +1,5 @@
+{
+  "python.defaultInterpreterPath": "/workspaces/mimic-iv-dbt/.venv/bin/python",
+  "python-envs.defaultEnvManager": "ms-python.python:venv",
+  "python-envs.pythonProjects": []
+}

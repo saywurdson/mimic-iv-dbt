@@ -1,0 +1,53 @@
+# Data files (MIMIC source CSVs, built DuckDB databases, exports)
+*.csv
+*.csv.gz
+*.db
+*.db.wal
+*.wal
+*.ndjson
+*.parquet
+data/
+
+# Reinstate team-shareable config that must stay tracked
+!.mcp.json
+!.devcontainer/devcontainer.json
+# dbt seeds are config, not data — keep them tracked
+!mimic_iv_dbt/seeds/**/*.csv
+
+# Environment / secrets
+*.env
+!.env.example
+secrets.toml
+*.secrets.toml
+
+# Python
+*.pyc
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+
+# dbt build artifacts
+mimic_iv_dbt/target/
+mimic_iv_dbt/dbt_packages/
+mimic_iv_dbt/logs/
+mimic_iv_dbt/.user.yml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE (track only the shared interpreter setting)
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Claude Code local state
+.claude/

@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: person
+    description: OMOP person. Final set (event-less patients removed via observation_period join). person_source_value = subject_id.
+  - name: observation_period
+    description: One row per person spanning MIN/MAX dates across all event domains. period_type 32828.
+  - name: visit_occurrence
+    description: Hospital admissions (hadm_id) + synthesized no-hadm single-day ambulatory visits. visit_source_value = subject|hadm or subject|date.
+  - name: visit_detail
+    description: Transfers (careunit) + ER admissions + service intervals.
+  - name: condition_occurrence
+    description: ICD9CM/ICD10CM diagnoses + chartevents value/main mapped to Condition.
+  - name: condition_era
+    description: Condition eras (30-day gap collapse).
+  - name: procedure_occurrence
+    description: ICD9Proc/ICD10PCS/HCPCS/CPT4 + procedureevents/datetimeevents itemid + DRG/specimen/chartevents Procedure rows.
+  - name: drug_exposure
+    description: prescriptions via NDC + name/strength gcpt; route via mimiciv_drug_route. type 32838.
+  - name: drug_era
+    description: RxNorm ingredient eras (concept_ancestor rollup, 30-day gap).
+  - name: dose_era
+    description: Per-ingredient dose intervals from drug_exposure + drug_strength.
+  - name: device_exposure
+    description: drug_mapped + chartevents_mapped rows whose target domain is Device.
+  - name: measurement
+    description: labevents + chartevents + micro organism/antibiotic + outputevents (Measurement domain). type 32856/32817.
+  - name: observation
+    description: insurance/marital/language/DRG + chartevents/procedure/diagnoses/specimen Observation rows. type 32817.
+  - name: specimen
+    description: microbiology specimens (mimiciv_micro_specimen). type 32856.
+  - name: death
+    description: deathtime from admissions; min(deathtime, dischtime). type 32817.
+  - name: fact_relationship
+    description: micro specimen<->organism and organism<->antibiotic symmetric measurement pairs.
+  - name: care_site
+    description: distinct transfers careunits; place_of_service via mimiciv_cs_place_of_service.
+  - name: location
+    description: single constant row (Beth Israel Hospital, MA).
+  - name: cdm_source
+    description: CDM metadata (MIMIC IV, 5.4).

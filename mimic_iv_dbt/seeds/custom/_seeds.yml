@@ -1,0 +1,34 @@
+version: 2
+
+seeds:
+  - name: custom_mapping
+    description: >
+      Normalized union of all OHDSI/MIMIC custom_mapping_csv/gcpt_*.csv files
+      (16-column custom_mapping schema). Each row defines a custom 2-billion-space
+      source concept plus its 'Maps to' relationship to a standard Athena concept
+      (target_concept_id, 0 if unmapped). Re-emitted via DuckDB to normalize the
+      reverese_relationship_id header typo across files.
+    config:
+      column_types:
+        concept_name: VARCHAR
+        source_concept_id: VARCHAR
+        source_vocabulary_id: VARCHAR
+        source_domain_id: VARCHAR
+        source_concept_class_id: VARCHAR
+        standard_concept: VARCHAR
+        concept_code: VARCHAR
+        valid_start_date: VARCHAR
+        valid_end_date: VARCHAR
+        invalid_reason: VARCHAR
+        target_concept_id: VARCHAR
+        relationship_id: VARCHAR
+        reverse_relationship_id: VARCHAR
+        relationship_valid_start_date: VARCHAR
+        relationship_end_date: VARCHAR
+        invalid_reason_cr: VARCHAR
+    columns:
+      # Local concept id (PK); must be globally unique across vocabularies.
+      - name: source_concept_id
+        data_tests:
+          - unique
+          - not_null

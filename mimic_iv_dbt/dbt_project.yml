@@ -1,0 +1,56 @@
+# MIMIC-IV -> OMOP CDM 5.4 dbt project (DuckDB)
+# Faithful re-implementation of the OHDSI/MIMIC BigQuery ETL.
+# 5-stage design (snapshot -> clean -> concept -> mapped -> distribute) expressed
+# as dbt layers: staging (src_*) -> intermediate (lk_*) -> omop (cdm_*).
+
+name: 'mimic_iv_dbt'
+version: '1.0.0'
+config-version: 2
+
+profile: 'mimic_iv_dbt'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+seeds:
+  +quote_columns: true
+  mimic_iv_dbt:
+    custom:
+      +schema: reference
+
+models:
+  mimic_iv_dbt:
+    staging:
+      +materialized: view
+      +schema: staging
+      # clinical staging -> disposable scratch db; vocabulary stays in the deliverable
+      mimic:
+        +database: mimic_iv_delete
+      vocabulary:
+        +materialized: table
+        +schema: vocab
+    intermediate:
+      +materialized: table
+      +schema: intermediate
+      +database: mimic_iv_delete
+    omop:
+      +materialized: table
+      +schema: omop
+
+vars:
+  # OMOP Athena vocabulary (shared TSVs); override with OMOP_VOCAB_PATH
+  vocab_path: "{{ env_var('OMOP_VOCAB_PATH', '/workspaces/mimic-iv-dbt/data/vocab') }}"
+  # MIMIC-IV source data root (gzipped relational CSVs, per-module subdirs); override with MIMIC_IV_PATH
+  mimic4_path: "{{ env_var('MIMIC_IV_PATH', '/workspaces/mimic-iv-dbt/data/mimiciv') }}"
+  # CDM source info
+  cdm_source_name: 'MIMIC IV'
+  cdm_source_abbreviation: 'mimiciv'
+  cdm_version: '5.4'

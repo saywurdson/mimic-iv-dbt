@@ -1,0 +1,6 @@
+
+target/
+dbt_packages/
+logs/
+mimic_iv_omop.db
+mimic_iv_omop.db.wal

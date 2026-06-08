@@ -1,0 +1,15 @@
+mimic_iv_dbt:
+  outputs:
+    dev:
+      type: duckdb
+      # Built OMOP CDM database (repo root by default; override with MIMIC_IV_DB_PATH).
+      path: "{{ env_var('MIMIC_IV_DB_PATH', '../mimic_iv_omop.db') }}"
+      threads: 8
+      settings:
+        threads: 10
+        memory_limit: '48GB'
+        preserve_insertion_order: false
+      attach:
+        # Disposable scratch database for staging + intermediate.
+        - path: "{{ env_var('MIMIC_IV_DELETE_DB_PATH', '../mimic_iv_delete.db') }}"
+  target: dev

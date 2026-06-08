@@ -1,0 +1,26 @@
+// MIMIC-IV -> OMOP CDM dev container.
+// For format details, see https://aka.ms/devcontainer.json.
+{
+	"name": "mimic-iv-dbt",
+	"build": {
+		// Run the build from the repo root so the Dockerfile can see the project.
+		"context": "..",
+		"dockerfile": "../Dockerfile"
+	},
+	"mounts": [
+		// Shared local OMOP/medical terminology DuckDB, exposed read-only to the
+		// terminology MCP server registered in postCreate (see below).
+		"source=${localEnv:HOME}/Documents/GitHub/terminology_db,target=/mnt/terminology_db,type=bind"
+	],
+	// Build the project virtualenv, then register the terminology MCP for Claude Code.
+	"postCreateCommand": "uv sync && claude mcp add --scope user terminology -- uvx mcp-server-motherduck --db-path /mnt/terminology_db/terminology.db --read-only",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"innoverio.vscode-dbt-power-user",
+				"Anthropic.claude-code"
+			]
+		}
+	}
+}

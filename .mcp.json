@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "dbt": {
+      "command": "uvx",
+      "args": [
+        "dbt-mcp"
+      ],
+      "env": {
+        "DBT_PROJECT_DIR": "/workspaces/mimic-iv-dbt/mimic_iv_dbt",
+        "DBT_PATH": "/workspaces/mimic-iv-dbt/.venv/bin/dbt"
+      }
+    }
+  }
+}

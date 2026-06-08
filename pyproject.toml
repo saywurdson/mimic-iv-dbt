@@ -1,0 +1,20 @@
+[project]
+name = "mimic-iv-dbt"
+version = "0.1.0"
+description = "MIMIC-IV -> OMOP CDM 5.4 transformation pipeline (dbt + DuckDB)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "dbt-core>=1.11",
+    "dbt-duckdb>=1.10",
+    "duckdb>=1.5.2",
+    "pandas>=2.2",
+    "tqdm>=4.67",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    "streamlit>=1.40",
+    "plotly>=6.0",
+    "ipykernel>=6.29",
+]
+
+[tool.uv]
+package = false
