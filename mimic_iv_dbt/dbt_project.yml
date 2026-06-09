@@ -44,10 +44,14 @@ models:
     omop:
       +materialized: table
       +schema: omop
+    # Clinical KPI summary tables (critical-care reporting) in 'marts' schema
+    marts:
+      +materialized: table
+      +schema: marts
 
 vars:
   # OMOP Athena vocabulary (shared TSVs); override with OMOP_VOCAB_PATH
-  vocab_path: "{{ env_var('OMOP_VOCAB_PATH', '/workspaces/mimic-iv-dbt/data/vocab') }}"
+  vocab_path: "{{ env_var('OMOP_VOCAB_PATH', '/workspaces/mimic-iv-dbt/mimic_iv_dbt/data') }}"
   # MIMIC-IV source data root (gzipped relational CSVs, per-module subdirs); override with MIMIC_IV_PATH
   mimic4_path: "{{ env_var('MIMIC_IV_PATH', '/workspaces/mimic-iv-dbt/data/mimiciv') }}"
   # CDM source info

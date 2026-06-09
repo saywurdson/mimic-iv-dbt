@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: kpi_admission_base
+    description: >
+      One row per hospital admission with derived critical-care attributes
+      (age, hospital/ICU length of stay, in-hospital and 30-day mortality,
+      30-day readmission). Foundation for the KPI summary marts.
+    columns:
+      - name: visit_occurrence_id
+        description: OMOP hospital admission id.
+        data_tests: [unique, not_null]
+      - name: person_id
+        data_tests: [not_null]
+
+  - name: kpi_patient_base
+    description: >
+      One row per patient, rolled up from kpi_admission_base and joined to
+      gender/race vocabulary names. First-admission age and age band included.
+    columns:
+      - name: person_id
+        data_tests: [unique, not_null]
+
+  - name: kpi_cohort_summary
+    description: Single-row headline counts (patients, admissions, ICU stays, deaths).
+
+  - name: kpi_demographics
+    description: Tidy (dimension, category) patient counts and percentages for gender, race, age band.
+    columns:
+      - name: dimension
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['gender', 'race', 'age_band']
+
+  - name: kpi_outcomes
+    description: >
+      Tidy (metric, value, unit) table of mortality, readmission, and
+      length-of-stay KPIs computed per admission.
+    columns:
+      - name: metric
+        data_tests: [unique, not_null]
+
+  - name: kpi_top_conditions
+    description: Top 25 condition concepts by distinct patient count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]
+  - name: kpi_top_drugs
+    description: Top 25 drug concepts by distinct patient count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]
+  - name: kpi_top_procedures
+    description: Top 25 procedure concepts by distinct patient count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]
+  - name: kpi_top_measurements
+    description: Top 25 measurement (lab/vital) concepts by distinct patient count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]

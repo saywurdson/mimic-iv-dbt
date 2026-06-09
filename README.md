@@ -2,10 +2,10 @@
 
 A dbt + DuckDB pipeline that transforms the [MIMIC-IV](https://physionet.org/content/mimiciv/)
 critical-care dataset into the [OHDSI **OMOP Common Data Model** (CDM) v5.4](https://ohdsi.github.io/CommonDataModel/).
-It is a faithful, DuckDB-native re-implementation of the OHDSI/MIMIC BigQuery ETL —
+It is a faithful, DuckDB-native re-implementation of the OHDSI/MIMIC BigQuery ETL -
 the same 5-stage design expressed as composable dbt layers.
 
-> ⚠️ **Data access.** MIMIC-IV is credentialed data. You must complete the
+> **Data access.** MIMIC-IV is credentialed data. You must complete the
 > [PhysioNet](https://physionet.org/) CITI training and data-use agreement before
 > downloading it. No patient data is included in this repository.
 
@@ -13,8 +13,10 @@ the same 5-stage design expressed as composable dbt layers.
 
 MIMIC-IV ships as ~30 relational tables across two modules (`hosp`, `icu`). This
 project lands them in DuckDB, cleans and maps them to standard OMOP vocabularies,
-and emits the 21 OMOP CDM clinical and standardized-vocabulary tables — ready for
-OHDSI analytics tools (ATLAS, Achilles, HADES) or plain SQL.
+and emits the 21 OMOP CDM clinical and standardized-vocabulary tables (the `omop`
+schema), with the standardized OMOP vocabulary loaded alongside in a `vocab`
+schema and a `marts` schema of ready-made clinical KPIs on top - ready for OHDSI
+analytics tools (ATLAS, Achilles, HADES) or plain SQL.
 
 ### What is OMOP CDM?
 
@@ -26,25 +28,54 @@ regardless of the originating EHR.
 ## Architecture
 
 The ETL follows the OHDSI snapshot → clean → concept → mapped → distribute design,
-realized as three dbt layers:
+realized as four dbt layers:
 
 ```
-MIMIC-IV CSVs ──► staging (src_*)  ──► intermediate (lk_*) ──► omop (cdm_*)
-  (*.csv.gz)       1:1 typed views     concept mapping &        OMOP CDM 5.4
-                                       business logic           tables
-       │                                                              │
-       └── OMOP Athena vocabulary (CONCEPT, CONCEPT_RELATIONSHIP, …) ──┘
+MIMIC-IV CSVs ─► staging (src_*) ─► intermediate (lk_*) ─► omop (cdm_*) ─► marts
+  (*.csv.gz)      1:1 typed views    concept mapping &       OMOP CDM     clinical
+                                     business logic          5.4 tables   KPIs
+       │                                                          │
+       └── OMOP Athena vocabulary (CONCEPT, CONCEPT_RELATIONSHIP, …) ──────┘
 ```
 
-- **staging** — one model per source table (light typing/renaming). Clinical
+- **staging** - one model per source table (light typing/renaming). Clinical
   staging materializes into a disposable scratch database; the OMOP vocabulary is
   staged into the deliverable.
-- **intermediate** — the heavy lifting: source values are mapped to standard OMOP
+- **intermediate** - the heavy lifting: source values are mapped to standard OMOP
   concepts via the Athena vocabulary plus custom seed mappings.
-- **omop** — the final CDM 5.4 tables in the `omop` schema.
+- **omop** - the final CDM 5.4 tables in the `omop` schema.
+- **marts** - clinical KPI summary tables (`kpi_*`) in the `marts` schema, built
+  on top of the OMOP layer for critical-care reporting (see below).
 
 Staging and intermediate tables are written to a throwaway `mimic_iv_delete`
 database (attached at build time) so the deliverable stays lean.
+
+### Clinical KPIs (`marts` schema)
+
+The `marts` models roll the OMOP tables up into the headline metrics a
+critical-care analyst reaches for first. They build with the rest of the DAG and
+land in the deliverable database alongside the OMOP tables:
+
+| Mart | What it answers |
+|------|-----------------|
+| `kpi_cohort_summary` | Patients, hospital admissions, ICU stays, deaths (one row) |
+| `kpi_outcomes` | In-hospital & 30-day mortality, 30-day readmission, hospital/ICU length of stay |
+| `kpi_demographics` | Patient counts and % by gender, race, and age band |
+| `kpi_top_conditions` / `kpi_top_drugs` / `kpi_top_procedures` / `kpi_top_measurements` | Top 25 concepts by distinct patients |
+| `kpi_admission_base` / `kpi_patient_base` | Per-admission and per-patient grain the summaries roll up from |
+
+MIMIC-IV de-identifies dates by shifting each patient's events into the future, so
+intervals (length of stay, age, readmission gaps) are exact while calendar dates
+are not. Patients over 89 are recorded with a de-identified age and are flagged
+and capped into the `90+` band.
+
+`kpi_admission_base` is grounded in the MIMIC-IV source tables rather than the
+OMOP layer, because that layer loses two distinctions the KPIs need: OMOP
+`visit_occurrence` unions real hospital admissions with synthesized no-hadm
+outpatient/ED visits (so a "hospital admission" is taken to be a row with a
+`hadm_id`), and this ETL's care-unit concept mapping only resolves one ICU unit to
+a standard concept (so ICU stays are detected from the source `transfers` care-unit
+names - MICU, SICU, CCU, CVICU, TSICU, Neuro SICU, NICU, …).
 
 ## Data Sources
 
@@ -114,6 +145,7 @@ uv run dbt build --project-dir mimic_iv_dbt        # run + test everything
 # or selectively:
 uv run dbt run  --project-dir mimic_iv_dbt --select staging
 uv run dbt run  --project-dir mimic_iv_dbt --select omop
+uv run dbt run  --project-dir mimic_iv_dbt --select marts   # KPI summaries (needs omop)
 ```
 
 ### 6. Explore the result
@@ -121,6 +153,11 @@ uv run dbt run  --project-dir mimic_iv_dbt --select omop
 ```bash
 uv run streamlit run dashboard.py                  # http://localhost:8501
 ```
+
+The dashboard reads the `marts.kpi_*` tables and renders cohort size, outcomes
+(mortality, readmission, length of stay), demographics, and the most common
+conditions, drugs, procedures, and measurements. You can also query the OMOP and
+`marts` tables directly in DuckDB (e.g. `SELECT * FROM marts.kpi_outcomes`).
 
 ## Project structure
 
@@ -139,20 +176,24 @@ mimic-iv-dbt/
     ├── models/
     │   ├── staging/         # src_* (mimic) + vocabulary
     │   ├── intermediate/    # lk_* concept mapping
-    │   └── omop/            # cdm_* OMOP CDM 5.4 tables
+    │   ├── omop/            # cdm_* OMOP CDM 5.4 tables
+    │   └── marts/           # kpi_* clinical summary tables
     ├── seeds/custom/        # custom concept mappings
     ├── macros/  tests/  snapshots/  analyses/
 ```
 
 ## Key engineering features
 
-- **DuckDB-native OHDSI ETL** — runs the full MIMIC-IV → OMOP mapping locally,
+- **DuckDB-native OHDSI ETL** - runs the full MIMIC-IV → OMOP mapping locally,
   no cloud warehouse required.
+- **Analytics-ready KPI marts** - critical-care metrics (mortality, length of
+  stay, readmission, demographics, top concepts) modeled in dbt and surfaced in a
+  Streamlit dashboard.
 - **Layered dbt design** with a disposable scratch database so the published
   OMOP database carries only the deliverable.
-- **Portable configuration** — all data and database paths resolve through
+- **Portable configuration** - all data and database paths resolve through
   `env_var()`, so the same project runs in the container, in CI, or on a laptop.
-- **Reproducible environment** — pinned via `uv`, containerized, dev-container ready.
+- **Reproducible environment** - pinned via `uv`, containerized, dev-container ready.
 
 ## Technologies
 

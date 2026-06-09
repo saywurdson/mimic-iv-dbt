@@ -11,7 +11,7 @@ data/
 # Reinstate team-shareable config that must stay tracked
 !.mcp.json
 !.devcontainer/devcontainer.json
-# dbt seeds are config, not data — keep them tracked
+# dbt seeds are config, not data - keep them tracked
 !mimic_iv_dbt/seeds/**/*.csv
 
 # Environment / secrets

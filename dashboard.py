@@ -1,10 +1,14 @@
-"""Starter Streamlit dashboard for the MIMIC-IV -> OMOP CDM database.
+"""Streamlit dashboard for the MIMIC-IV -> OMOP CDM database.
 
-Connects read-only to the DuckDB built by dbt and renders a handful of standard
-OMOP CDM views (cohort size, demographics, visits over time, top concepts).
-Concept names are resolved against the `vocab.concept` table when present and
-fall back to raw concept ids otherwise, so the dashboard works even before the
-vocabulary is loaded.
+Connects read-only to the DuckDB built by dbt and renders the clinical KPI marts
+(the `marts.kpi_*` tables) as critical-care summary views: cohort size, outcomes
+(mortality, readmission, length of stay), demographics, and the most common
+conditions, drugs, procedures, and measurements.
+
+The marts pre-compute every aggregate, so this app only reads small summary
+tables rather than scanning the raw OMOP clinical tables. Build them with
+`uv run python mimiciv.py build` (or `dbt build --select marts` if the OMOP
+layer already exists).
 
 Run:  uv run streamlit run dashboard.py
 """
@@ -23,12 +27,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATASET = "MIMIC-IV"
-OMOP_SCHEMA = "omop"
-VOCAB_SCHEMA = "vocab"
+MARTS_SCHEMA = "marts"
 REPO_ROOT = Path(__file__).resolve().parent
 DB_PATH = os.environ.get("MIMIC_IV_DB_PATH") or str(REPO_ROOT / "mimic_iv_omop.db")
 
-st.set_page_config(page_title=f"{DATASET} OMOP Explorer", page_icon="🏥", layout="wide")
+# Display order for the age bands produced by kpi_admission_base.
+AGE_BAND_ORDER = ["0 (neonate)", "1-17", "18-44", "45-64", "65-89", "90+"]
+
+st.set_page_config(page_title=f"{DATASET} OMOP Explorer", layout="wide")
 
 
 @st.cache_resource
@@ -55,145 +61,175 @@ def table_exists(path: str, schema: str, table: str) -> bool:
     return not df.empty
 
 
-def row_count(path: str, table: str) -> int | None:
-    if not table_exists(path, OMOP_SCHEMA, table):
-        return None
-    return int(run_query(path, f"SELECT count(*) AS n FROM {OMOP_SCHEMA}.{table}")["n"][0])
+def mart(path: str, name: str) -> pd.DataFrame:
+    """Read a marts.kpi_* table, or return an empty frame if it is missing."""
+    if not table_exists(path, MARTS_SCHEMA, name):
+        return pd.DataFrame()
+    return run_query(path, f"SELECT * FROM {MARTS_SCHEMA}.{name}")
 
 
-def concept_label_expr(id_column: str, has_vocab: bool) -> str:
-    """Return a SQL expression mapping a *_concept_id column to a display label."""
-    if has_vocab:
-        return f"coalesce(c.concept_name, 'concept ' || {id_column}::VARCHAR)"
-    return f"'concept ' || {id_column}::VARCHAR"
+def fmt(value: float, unit: str) -> str:
+    if unit == "percent":
+        return f"{value:.1f}%"
+    if unit == "days":
+        return f"{value:.1f} d"
+    return f"{value:g}"
 
 
-def top_concepts(path: str, table: str, id_column: str, has_vocab: bool, limit: int = 10) -> pd.DataFrame:
-    label = concept_label_expr(f"t.{id_column}", has_vocab)
-    join = (
-        f"LEFT JOIN {VOCAB_SCHEMA}.concept c ON c.concept_id = t.{id_column}"
-        if has_vocab
-        else ""
+def top_concept_chart(path: str, name: str, title: str, limit: int = 15) -> None:
+    st.subheader(title)
+    df = mart(path, name)
+    if df.empty:
+        st.write(f"`{MARTS_SCHEMA}.{name}` not found.")
+        return
+    df = df.sort_values("n_patients", ascending=False).head(limit)
+    fig = px.bar(
+        df.sort_values("n_patients"),
+        x="n_patients",
+        y="concept_name",
+        orientation="h",
+        labels={"n_patients": "patients", "concept_name": ""},
     )
-    return run_query(
-        path,
-        f"""
-        SELECT {label} AS concept, count(*) AS records
-        FROM {OMOP_SCHEMA}.{table} t
-        {join}
-        WHERE t.{id_column} IS NOT NULL AND t.{id_column} <> 0
-        GROUP BY 1
-        ORDER BY records DESC
-        LIMIT {limit}
-        """,
-    )
+    st.plotly_chart(fig, width="stretch")
 
 
-# ---------------------------------------------------------------------------- UI
-st.title(f"🏥 {DATASET} → OMOP CDM 5.4 Explorer")
-st.caption(f"DuckDB: `{DB_PATH}`  ·  schema: `{OMOP_SCHEMA}`")
+# UI -------------------------------------------------------------------------
+st.title(f"{DATASET} OMOP CDM 5.4 Explorer")
+st.caption(f"DuckDB: `{DB_PATH}`  schema: `{MARTS_SCHEMA}`")
 
 if not Path(DB_PATH).exists():
     st.error(
         f"Database not found at `{DB_PATH}`.\n\n"
-        "Build it first with `uv run dbt build --project-dir mimic_iv_dbt`, "
+        "Build it first with `uv run python mimiciv.py build`, "
         "or point `MIMIC_IV_DB_PATH` at an existing OMOP database."
     )
     st.stop()
 
-has_vocab = table_exists(DB_PATH, VOCAB_SCHEMA, "concept")
-if not has_vocab:
-    st.info("`vocab.concept` not found — showing raw concept ids instead of names.")
+if not table_exists(DB_PATH, MARTS_SCHEMA, "kpi_cohort_summary"):
+    st.error(
+        "The `marts` KPI tables were not found in this database.\n\n"
+        "Build them with `uv run python mimiciv.py build` "
+        "(or `dbt build --select marts` if the OMOP layer already exists)."
+    )
+    st.stop()
 
-# --- KPI row ---------------------------------------------------------------
-kpis = {
-    "Persons": "person",
-    "Visits": "visit_occurrence",
-    "Conditions": "condition_occurrence",
-    "Drug exposures": "drug_exposure",
-    "Measurements": "measurement",
-    "Procedures": "procedure_occurrence",
-}
-cols = st.columns(len(kpis))
-for col, (label, table) in zip(cols, kpis.items()):
-    n = row_count(DB_PATH, table)
-    col.metric(label, f"{n:,}" if n is not None else "—")
+st.caption(
+    "MIMIC-IV is critical-care data, de-identified by shifting each patient's "
+    "dates into the future, so length-of-stay, age, and readmission intervals are "
+    "exact while calendar dates are not. Patients over 89 are shown as the `90+` "
+    "age band."
+)
+
+# Headline KPI cards ---------------------------------------------------------
+cohort = mart(DB_PATH, "kpi_cohort_summary").iloc[0]
+outcomes = mart(DB_PATH, "kpi_outcomes")
+o = {row.metric: (row.value, row.unit) for row in outcomes.itertuples()}
+
+cards = [
+    ("Patients", f"{int(cohort.n_patients):,}"),
+    ("Hospital admissions", f"{int(cohort.n_hospital_admissions):,}"),
+    ("ICU stays", f"{int(cohort.n_icu_stays):,}"),
+    ("Deaths", f"{int(cohort.n_deaths):,}"),
+    ("In-hospital mortality", fmt(*o["in_hospital_mortality_rate"]) if "in_hospital_mortality_rate" in o else "N/A"),
+    ("30-day readmission", fmt(*o["30_day_readmission_rate"]) if "30_day_readmission_rate" in o else "N/A"),
+]
+for col, (label, value) in zip(st.columns(len(cards)), cards):
+    col.metric(label, value)
 
 st.divider()
 
-# --- Demographics ----------------------------------------------------------
-left, right = st.columns(2)
+# Outcomes -------------------------------------------------------------------
+st.subheader("Outcomes")
+rate_keys = [
+    ("in_hospital_mortality_rate", "In-hospital mortality"),
+    ("30_day_mortality_rate", "30-day mortality"),
+    ("30_day_readmission_rate", "30-day readmission"),
+    ("admissions_with_icu_pct", "Admissions with ICU"),
+]
+rate_cols = st.columns(len(rate_keys))
+for col, (key, label) in zip(rate_cols, rate_keys):
+    col.metric(label, fmt(*o[key]) if key in o else "N/A")
+
+st.markdown("**Length of stay** (median with interquartile range)")
+los_rows = []
+for stay, prefix in [("Hospital", "hospital_los"), ("ICU", "icu_los")]:
+    if f"{prefix}_median" in o:
+        los_rows.append(
+            {
+                "stay": stay,
+                "median": o[f"{prefix}_median"][0],
+                "p25": o[f"{prefix}_p25"][0],
+                "p75": o[f"{prefix}_p75"][0],
+            }
+        )
+if los_rows:
+    los = pd.DataFrame(los_rows)
+    los["err_plus"] = los["p75"] - los["median"]
+    los["err_minus"] = los["median"] - los["p25"]
+    fig = px.bar(
+        los,
+        x="median",
+        y="stay",
+        orientation="h",
+        labels={"median": "days", "stay": ""},
+        error_x="err_plus",
+        error_x_minus="err_minus",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+st.divider()
+
+# Demographics ---------------------------------------------------------------
+demo = mart(DB_PATH, "kpi_demographics")
+st.subheader("Demographics")
+left, mid, right = st.columns(3)
 
 with left:
-    st.subheader("Patients by gender")
-    if table_exists(DB_PATH, OMOP_SCHEMA, "person"):
-        label = concept_label_expr("p.gender_concept_id", has_vocab)
-        join = (
-            f"LEFT JOIN {VOCAB_SCHEMA}.concept c ON c.concept_id = p.gender_concept_id"
-            if has_vocab
-            else ""
+    st.markdown("**Gender**")
+    g = demo[demo["dimension"] == "gender"]
+    if not g.empty:
+        st.plotly_chart(
+            px.pie(g, names="category", values="n_patients", hole=0.4),
+            width="stretch",
         )
-        gender = run_query(
-            DB_PATH,
-            f"""
-            SELECT {label} AS gender, count(*) AS patients
-            FROM {OMOP_SCHEMA}.person p
-            {join}
-            GROUP BY 1 ORDER BY patients DESC
-            """,
+
+with mid:
+    st.markdown("**Age band**")
+    a = demo[demo["dimension"] == "age_band"]
+    if not a.empty:
+        st.plotly_chart(
+            px.bar(
+                a,
+                x="category",
+                y="n_patients",
+                labels={"category": "", "n_patients": "patients"},
+                category_orders={"category": AGE_BAND_ORDER},
+            ),
+            width="stretch",
         )
-        st.plotly_chart(px.pie(gender, names="gender", values="patients", hole=0.4),
-                        use_container_width=True)
-    else:
-        st.write("No `person` table.")
 
 with right:
-    st.subheader("Patients by year of birth")
-    if table_exists(DB_PATH, OMOP_SCHEMA, "person"):
-        yob = run_query(
-            DB_PATH,
-            f"""
-            SELECT year_of_birth AS year, count(*) AS patients
-            FROM {OMOP_SCHEMA}.person
-            WHERE year_of_birth IS NOT NULL
-            GROUP BY 1 ORDER BY 1
-            """,
-        )
-        st.plotly_chart(px.bar(yob, x="year", y="patients"), use_container_width=True)
-    else:
-        st.write("No `person` table.")
-
-# --- Visits over time ------------------------------------------------------
-st.subheader("Visits per year")
-if table_exists(DB_PATH, OMOP_SCHEMA, "visit_occurrence"):
-    visits = run_query(
-        DB_PATH,
-        f"""
-        SELECT extract('year' FROM visit_start_date) AS year, count(*) AS visits
-        FROM {OMOP_SCHEMA}.visit_occurrence
-        WHERE visit_start_date IS NOT NULL
-        GROUP BY 1 ORDER BY 1
-        """,
-    )
-    st.plotly_chart(px.line(visits, x="year", y="visits", markers=True),
-                    use_container_width=True)
-else:
-    st.write("No `visit_occurrence` table.")
-
-# --- Top concepts ----------------------------------------------------------
-st.divider()
-top_specs = [
-    ("Top conditions", "condition_occurrence", "condition_concept_id"),
-    ("Top drugs", "drug_exposure", "drug_concept_id"),
-    ("Top measurements", "measurement", "measurement_concept_id"),
-]
-for title, table, id_col in top_specs:
-    st.subheader(title)
-    if table_exists(DB_PATH, OMOP_SCHEMA, table):
-        df = top_concepts(DB_PATH, table, id_col, has_vocab)
+    st.markdown("**Race (top 10)**")
+    r = demo[demo["dimension"] == "race"].sort_values("n_patients", ascending=False).head(10)
+    if not r.empty:
         st.plotly_chart(
-            px.bar(df.sort_values("records"), x="records", y="concept", orientation="h"),
-            use_container_width=True,
+            px.bar(
+                r.sort_values("n_patients"),
+                x="n_patients",
+                y="category",
+                orientation="h",
+                labels={"n_patients": "patients", "category": ""},
+            ),
+            width="stretch",
         )
-    else:
-        st.write(f"No `{table}` table.")
+
+st.divider()
+
+# Most common clinical concepts ---------------------------------------------
+c1, c2 = st.columns(2)
+with c1:
+    top_concept_chart(DB_PATH, "kpi_top_conditions", "Top conditions")
+    top_concept_chart(DB_PATH, "kpi_top_procedures", "Top procedures")
+with c2:
+    top_concept_chart(DB_PATH, "kpi_top_drugs", "Top drugs")
+    top_concept_chart(DB_PATH, "kpi_top_measurements", "Top measurements")

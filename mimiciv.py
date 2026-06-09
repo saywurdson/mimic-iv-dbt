@@ -1,164 +1,200 @@
+"""Download the MIMIC-IV source files the dbt project reads.
+
+The dbt models read the raw gzipped CSVs straight off disk via the
+`read_mimic4` macro, which expects a flat per-module layout:
+
+    <MIMIC_IV_PATH>/<module>/<table>.csv.gz
+
+This script fetches exactly the modules the project uses and lays them out
+that way. It downloads nothing else:
+
+  * dbt seeds (mimic_iv_dbt/seeds/custom/custom_mapping.csv) ship in the repo
+    and are loaded by `dbt seed` / `dbt build` -- not downloaded here.
+  * The OMOP Athena vocabulary (OMOP_VOCAB_PATH) is a license-gated manual
+    download from athena.ohdsi.org and cannot be scripted; see the README.
+
+Requires a PhysioNet account with MIMIC-IV credentialed access. Credentials are
+read from PHYSIONET_USER / PHYSIONET_PASSWORD (e.g. in .env) if set; otherwise
+you are prompted for them at runtime.
+
+Usage:
+    python mimiciv.py download   # download the MIMIC-IV source files only
+    python mimiciv.py build      # build the OMOP CDM with dbt (files must exist)
+    python mimiciv.py all        # download then build (default)
+"""
+
 import os
+import glob
+import shutil
+import argparse
 import subprocess
 import concurrent.futures
 from getpass import getpass
-import glob
-import duckdb
-from tqdm import tqdm
-import pandas as pd
+from urllib.parse import urlparse
 
-def download_data(url, download_directory, username, password):
-    # Check if any .csv.gz files already exist in the download directory
-    if os.path.exists(download_directory) and glob.glob(os.path.join(download_directory, '**', '*.csv.gz'), recursive=True):
-        print(f"Data already downloaded for {url}, skipping...")
+from dotenv import load_dotenv
+
+# Pick up MIMIC_IV_PATH (and any credentials) from .env so paths match dbt.
+load_dotenv()
+
+# Where dbt looks for source data -- keep this default in sync with
+# mimic_iv_dbt/dbt_project.yml (var: mimic4_path) and .env.example.
+MIMIC_IV_PATH = os.environ.get(
+    "MIMIC_IV_PATH", "/workspaces/mimic-iv-dbt/data/mimiciv"
+)
+
+# Where dbt looks for the OMOP Athena vocabulary -- keep in sync with
+# mimic_iv_dbt/dbt_project.yml (var: vocab_path) and .env.example.
+OMOP_VOCAB_PATH = os.environ.get(
+    "OMOP_VOCAB_PATH", "/workspaces/mimic-iv-dbt/mimic_iv_dbt/data"
+)
+
+# The dbt project directory; profiles.yml lives here too.
+DBT_PROJECT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mimic_iv_dbt")
+
+# Dataset versions on PhysioNet (override via env if you need a different one).
+MIMIC_IV_VERSION = os.environ.get("MIMIC_IV_VERSION", "3.1")
+MIMIC_IV_NOTE_VERSION = os.environ.get("MIMIC_IV_NOTE_VERSION", "2.2")
+
+PHYSIONET = "https://physionet.org/files"
+
+# Only the modules the dbt staging models actually read:
+#   hosp + icu  -> the core `mimiciv` dataset
+#   note        -> the separate `mimic-iv-note` dataset (discharge, radiology)
+# The `ed` module is intentionally omitted -- nothing references it.
+MODULES = [
+    {"module": "hosp", "url": f"{PHYSIONET}/mimiciv/{MIMIC_IV_VERSION}/hosp/"},
+    {"module": "icu", "url": f"{PHYSIONET}/mimiciv/{MIMIC_IV_VERSION}/icu/"},
+    {"module": "note", "url": f"{PHYSIONET}/mimic-iv-note/{MIMIC_IV_NOTE_VERSION}/note/"},
+]
+
+
+def download_module(module, url, username, password):
+    """Recursively fetch a module's *.csv.gz into <MIMIC_IV_PATH>/<module>/.
+
+    Uses wget with --cut-dirs so the PhysioNet path prefix
+    (files/<dataset>/<version>/<module>/) is stripped and files land flat in
+    the target directory, which is what `read_mimic4` expects.
+    """
+    target = os.path.join(MIMIC_IV_PATH, module)
+
+    if glob.glob(os.path.join(target, "*.csv.gz")):
+        print(f"[{module}] already present in {target}, skipping.")
         return
 
-    print(f"Starting download from: {url}")
-    os.makedirs(download_directory, exist_ok=True)
-    
-    # Construct wget command
-    command = ["wget", "-r", "-N", "-c", "-np", url]
+    os.makedirs(target, exist_ok=True)
+
+    # Strip every path segment of the URL (files/<dataset>/<version>/<module>)
+    # so downloaded files sit directly under `target`.
+    cut_dirs = len([p for p in urlparse(url).path.split("/") if p])
+
+    command = [
+        "wget",
+        "-r",                  # recurse into the module directory
+        "-N",                  # only re-fetch if newer (idempotent)
+        "-c",                  # continue partial downloads
+        "-np",                 # never ascend to the parent directory
+        "-nH",                 # drop the physionet.org host directory
+        f"--cut-dirs={cut_dirs}",
+        "-P", target,          # output root
+        "-A", "*.csv.gz",      # accept only the data files
+        "-R", "index.html*",   # never keep directory index pages
+    ]
     if username and password:
-        command.extend(["--user", username, "--password", password])
+        command += ["--user", username, "--password", password]
+    command.append(url)
 
-    # Run the command
-    subprocess.run(command, cwd=download_directory)
+    print(f"[{module}] downloading from {url} -> {target}")
+    subprocess.run(command, check=True)
 
-def upload_csv_to_duckdb(con, directory, schema_name):
-    # Ensure the directory exists
-    if not os.path.exists(directory):
-        print(f"Directory does not exist: {directory}")
-        return
 
-    # Create the specified schema if it doesn't exist
-    con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-    print(f"Schema '{schema_name}' created or already exists.")
+def need_download():
+    """True if any required module is missing its *.csv.gz files."""
+    return any(
+        not glob.glob(os.path.join(MIMIC_IV_PATH, m["module"], "*.csv.gz"))
+        for m in MODULES
+    )
 
-    # Find all .csv.gz files in the directory
-    csv_files = glob.glob(os.path.join(directory, '**', '*.csv.gz'), recursive=True)
-    if not csv_files:
-        print(f"No .csv.gz files found in directory {directory}")
-        return  # If no files are found, return early
 
-    for file in tqdm(csv_files, desc=f"Uploading files to {schema_name}"):
-        # Extract table name from file name
-        table_name = os.path.splitext(os.path.splitext(os.path.basename(file))[0])[0]
-        print(f"Creating table {table_name} from file {file} in schema {schema_name}...")
-        
-        try:
-            # Specify options and attempt to create table from the CSV file
-            con.execute(f"""
-                CREATE TABLE IF NOT EXISTS "{schema_name}.{table_name}" AS 
-                SELECT * FROM read_csv('{file}', SAMPLE_SIZE=-1, AUTO_DETECT=TRUE)
-            """)
-        except Exception as e:
-            print(f"Failed to create table {table_name} from file {file}: {e}")
+def download():
+    """Download every required MIMIC-IV module into MIMIC_IV_PATH."""
+    if shutil.which("wget") is None:
+        raise SystemExit("wget is required but was not found on PATH.")
 
-def process_reference_tables(seed_directory, db_name):
-    # Ensure the seed directory exists
-    if not os.path.exists(seed_directory):
-        print(f"Seed directory does not exist: {seed_directory}")
-        return
+    print(f"MIMIC-IV target directory: {MIMIC_IV_PATH}")
 
-    # Connect to DuckDB
-    con = duckdb.connect(db_name)
+    username = password = None
+    if need_download():
+        # Use PHYSIONET_USER / PHYSIONET_PASSWORD from .env if set; otherwise prompt.
+        username = os.environ.get("PHYSIONET_USER") or input("PhysioNet username: ")
+        password = os.environ.get("PHYSIONET_PASSWORD") or getpass("PhysioNet password: ")
+    else:
+        print("All required modules already downloaded.")
 
-    # Collect all CSV files in the seed directory
-    all_files = os.listdir(seed_directory)
-    csv_files = [f for f in all_files if f.endswith('.csv')]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(MODULES)) as executor:
+        futures = [
+            executor.submit(download_module, m["module"], m["url"], username, password)
+            for m in MODULES
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()  # surface any download error
 
-    # If no CSV files found, print a message and exit the function
-    if not csv_files:
-        print("No CSV files found in the seed directory.")
-        con.close()
-        return
+    print(f"\nDone. Modules available under {MIMIC_IV_PATH}: "
+          f"{', '.join(m['module'] for m in MODULES)}")
 
-    # Process each CSV file
-    for file in tqdm(csv_files, desc="Processing Reference files"):
-        file_path = os.path.join(seed_directory, file)
-        try:
-            df = pd.read_csv(file_path, delimiter='\t', low_memory=False)  # Ensure delimiter matches file format
-            dataframe_name = os.path.splitext(file)[0].lower()
 
-            # Create schema and table in DuckDB
-            table_name = f"reference.{dataframe_name}"
-            con.execute(f"CREATE SCHEMA IF NOT EXISTS reference")
-            con.register(f"{dataframe_name}_df", df)
-            con.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM {dataframe_name}_df")
+def build():
+    """Build the OMOP CDM with dbt. Requires the source files (and vocab) present.
 
-        except Exception as e:  # Catching any exception that might occur and print it
-            print(f"Error processing file '{file}': {e}")
+    Credentials/paths from .env are already loaded into os.environ above, so the
+    `dbt` subprocess inherits MIMIC_IV_PATH / OMOP_VOCAB_PATH automatically.
+    """
+    missing = [m["module"] for m in MODULES
+               if not glob.glob(os.path.join(MIMIC_IV_PATH, m["module"], "*.csv.gz"))]
+    if missing:
+        raise SystemExit(
+            f"MIMIC-IV source files missing for module(s): {', '.join(missing)}.\n"
+            f"Run `python mimiciv.py download` first (expected under {MIMIC_IV_PATH})."
+        )
 
-    # Close the database connection
-    con.close()
+    if not os.path.isfile(os.path.join(OMOP_VOCAB_PATH, "CONCEPT.csv")):
+        raise SystemExit(
+            f"OMOP Athena vocabulary not found in {OMOP_VOCAB_PATH} (CONCEPT.csv).\n"
+            "It is a manual, license-gated download from https://athena.ohdsi.org "
+            "-- unzip the bundle's *.csv files there (see the README), then re-run."
+        )
+
+    print("Building OMOP CDM with dbt...")
+    subprocess.run(
+        ["uv", "run", "dbt", "build",
+         "--project-dir", DBT_PROJECT_DIR,
+         "--profiles-dir", DBT_PROJECT_DIR],
+        check=True,
+    )
+    db = os.environ.get("MIMIC_IV_DB_PATH", "./mimic_iv_omop.db")
+    print(f"\nDone. OMOP CDM database: {db}")
+    print("Explore it with: uv run streamlit run dashboard.py")
+
 
 def main():
-    # Base directory for downloads
-    base_download_directory = "/workspaces/dbt_mimic_iv/mimiciv"
+    parser = argparse.ArgumentParser(
+        description="Download MIMIC-IV source data and/or build the OMOP CDM with dbt."
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=["download", "build", "all"],
+        default="all",
+        help="download: fetch source files only; build: run dbt only (files must "
+             "already be downloaded); all: download then build (default).",
+    )
+    args = parser.parse_args()
 
-    # Database file location
-    db_name = "/workspaces/dbt_mimic_iv/mimiciv.db"
+    if args.mode in ("download", "all"):
+        download()
+    if args.mode in ("build", "all"):
+        build()
 
-    # Check for existing files and prompt for credentials if necessary
-    need_credentials = False
-    downloads = [
-        {"url": "https://physionet.org/files/mimiciv/2.2/", "dir": "mimiciv"},
-        {"url": "https://physionet.org/files/mimic-iv-ed/2.2/", "dir": "mimic-iv-ed"},
-        {"url": "https://physionet.org/files/mimic-iv-note/2.2/", "dir": "mimic-iv-note"}
-    ]
-
-    for download in downloads:
-        download_dir = os.path.join(base_download_directory, download["dir"])
-        if not os.path.exists(download_dir) or not glob.glob(os.path.join(download_dir, '*.csv.gz')):
-            need_credentials = True
-            break
-
-    if need_credentials:
-        # Get username and password only if needed
-        username = input("Enter your username: ")
-        password = getpass("Enter your password: ")
-    else:
-        username = None
-        password = None
-
-    # Connect to DuckDB
-    con = duckdb.connect(db_name)
-
-    # Start the download and upload process
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(downloads)) as executor:
-        futures = []
-        for download in downloads:
-            download_dir = os.path.join(base_download_directory, download["dir"])
-            futures.append(
-                executor.submit(download_data, download['url'], download_dir, username, password)
-            )
-
-        # Wait for all threads to complete
-        for future in concurrent.futures.as_completed(futures):
-            future.result()
-
-    # Directory containing the reference files
-    seed_directory = '/workspaces/dbt_mimic_iv/omop/seeds'
-
-    # Specify directories and their corresponding schemas
-    directories_and_schemas = {
-        os.path.join(base_download_directory, "mimic-iv-ed"): "raw_ed",
-        os.path.join(base_download_directory, "mimic-iv-note"): "raw_note",
-        os.path.join(base_download_directory, "mimiciv"): "raw_hosp",
-        os.path.join(base_download_directory, "mimiciv"): "raw_icu"
-    }
-
-    # Upload data to DuckDB
-    for directory, schema in directories_and_schemas.items():
-        upload_csv_to_duckdb(con, directory, schema)
-
-    # Process reference tables if necessary
-    process_reference_tables(seed_directory, db_name)
-
-    # Close the database connection
-    con.close()
-
-    print("Process completed successfully.")
 
 if __name__ == "__main__":
     main()
