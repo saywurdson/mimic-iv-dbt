@@ -130,6 +130,30 @@ rule_out AS (
     INNER JOIN {{ ref('cdm_person_all') }} per ON CAST(src.subject_id AS VARCHAR) = per.person_source_value
     LEFT JOIN {{ ref('visit_occurrence') }} vis
         ON vis.visit_source_value = CAST(src.subject_id AS VARCHAR) || '|' || CAST(src.hadm_id AS VARCHAR)
+),
+rule_ed AS (
+    -- MIMIC-IV-ED vitals (triage + vitalsign) unpivoted to one measurement per (stay, vital, value).
+    -- visit_occurrence_id comes from lk_ed_visit (band 27, via lk_ed_meas), id from the ed_measurement band.
+    SELECT
+        {{ mimic_sk('ed_measurement', 'src.person_id, src.visit_occurrence_id, src.measurement_source_value, src.measurement_datetime, src.value_source_value') }} AS measurement_id,
+        src.person_id,
+        COALESCE(src.measurement_concept_id, 0) AS measurement_concept_id,
+        CAST(src.measurement_datetime AS DATE)  AS measurement_date,
+        src.measurement_datetime                AS measurement_datetime,
+        src.measurement_type_concept_id         AS measurement_type_concept_id,
+        CAST(NULL AS BIGINT)                    AS operator_concept_id,
+        src.value_as_number                     AS value_as_number,
+        CAST(NULL AS BIGINT)                    AS value_as_concept_id,
+        src.unit_concept_id                     AS unit_concept_id,
+        CAST(NULL AS DOUBLE)                    AS range_low,
+        CAST(NULL AS DOUBLE)                    AS range_high,
+        src.visit_occurrence_id,
+        src.measurement_source_value            AS measurement_source_value,
+        CAST(NULL AS BIGINT)                    AS measurement_source_concept_id,
+        CAST(NULL AS VARCHAR)                   AS unit_source_value,
+        src.value_source_value                  AS value_source_value,
+        'measurement.ed_vital'                  AS unit_id
+    FROM {{ ref('lk_ed_meas') }} src
 )
 SELECT
     measurement_id, person_id, measurement_concept_id, measurement_date, measurement_datetime,
@@ -145,4 +169,5 @@ FROM (
     UNION ALL SELECT * FROM rule_org
     UNION ALL SELECT * FROM rule_ab
     UNION ALL SELECT * FROM rule_out
+    UNION ALL SELECT * FROM rule_ed
 ) m

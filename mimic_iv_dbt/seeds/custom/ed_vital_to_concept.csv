@@ -1,0 +1,11 @@
+ed_column,target_domain,concept_id,unit_concept_id
+temperature,Measurement,3020891,9289
+heartrate,Measurement,3027018,0
+resprate,Measurement,3024171,0
+o2sat,Measurement,40762499,8554
+sbp,Measurement,3004249,8876
+dbp,Measurement,3012888,8876
+pain,Measurement,4137083,0
+acuity,Observation,0,0
+chiefcomplaint,Observation,37158808,0
+rhythm,Observation,0,0

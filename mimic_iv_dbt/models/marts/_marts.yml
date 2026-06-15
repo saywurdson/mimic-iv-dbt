@@ -61,3 +61,38 @@ models:
     columns:
       - name: rank
         data_tests: [unique, not_null]
+
+  # --- Emergency Department (MIMIC-IV-ED module) ---------------------------
+  - name: kpi_ed_summary
+    description: >
+      Single-row ED headline counts: ED visits, ED patients, ED -> inpatient
+      admissions and rate, and median ED length of stay (hours).
+
+  - name: kpi_ed_breakdowns
+    description: >
+      Tidy (dimension, category) counts of ED stays for disposition,
+      arrival_transport, and triage acuity, with percent of all ED stays.
+    columns:
+      - name: dimension
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['disposition', 'arrival_transport', 'acuity']
+
+  - name: kpi_ed_chief_complaints
+    description: Top 20 ED chief complaints (free-text, as entered at triage) by ED-stay count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]
+
+  # --- Payer mix and DRG (payer_plan_period + cost tables) -----------------
+  - name: kpi_payer_mix
+    description: >
+      Payer (insurance) mix across hospital admissions from payer_plan_period:
+      admission and distinct-patient counts and percent of admissions per payer.
+
+  - name: kpi_top_drg
+    description: Top 25 DRG concepts (from the cost table) by distinct patient count.
+    columns:
+      - name: rank
+        data_tests: [unique, not_null]

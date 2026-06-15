@@ -23,7 +23,9 @@
         'labevents': 10, 'chartevents': 11, 'outputevents': 12,
         'specimen': 13, 'meas_organism': 14, 'meas_ab': 15,
         'observation_period': 16, 'condition_era': 17, 'drug_era': 18, 'dose_era': 19,
-        'provider': 20, 'note': 21
+        'provider': 20, 'note': 21,
+        'metadata': 22, 'payer_plan_period': 23, 'cost': 24, 'episode': 25, 'note_nlp': 26,
+        'ed_visit': 27, 'ed_condition': 28, 'ed_measurement': 29, 'ed_observation': 30, 'ed_drug': 31
     } %}
     {{ return(bands) }}
 {% endmacro %}

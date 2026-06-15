@@ -152,3 +152,29 @@ SELECT
     CAST(NULL AS BIGINT) AS observation_event_id,
     CAST(NULL AS BIGINT) AS obs_event_field_concept_id
 FROM ce
+UNION ALL
+-- ED triage chiefcomplaint/acuity + vitalsign rhythm -> Observation (visit from lk_ed_visit band 27).
+SELECT
+    {{ mimic_sk('ed_observation', 'per.person_id, src.observation_concept_id, src.observation_datetime, src.source_code, src.load_table_id') }} AS observation_id,
+    per.person_id,
+    src.observation_concept_id                  AS observation_concept_id,
+    CAST(src.observation_datetime AS DATE)      AS observation_date,
+    src.observation_datetime                    AS observation_datetime,
+    src.observation_type_concept_id             AS observation_type_concept_id,
+    src.value_as_number                         AS value_as_number,
+    src.value_as_string                         AS value_as_string,
+    CASE WHEN src.value_as_string IS NOT NULL THEN 0 END AS value_as_concept_id,
+    CAST(NULL AS BIGINT)                        AS qualifier_concept_id,
+    CAST(NULL AS BIGINT)                        AS unit_concept_id,
+    CAST(NULL AS BIGINT)                        AS provider_id,
+    src.visit_occurrence_id                     AS visit_occurrence_id,
+    CAST(NULL AS BIGINT)                        AS visit_detail_id,
+    src.source_code                             AS observation_source_value,
+    0                                           AS observation_source_concept_id,
+    CAST(NULL AS VARCHAR)                       AS unit_source_value,
+    CAST(NULL AS VARCHAR)                       AS qualifier_source_value,
+    CAST(NULL AS VARCHAR)                       AS value_source_value,
+    CAST(NULL AS BIGINT)                        AS observation_event_id,
+    CAST(NULL AS BIGINT)                        AS obs_event_field_concept_id
+FROM {{ ref('lk_ed_obs') }} src
+INNER JOIN {{ ref('cdm_person_all') }} per ON CAST(src.subject_id AS VARCHAR) = per.person_source_value

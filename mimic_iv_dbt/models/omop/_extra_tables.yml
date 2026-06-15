@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: metadata
+    description: CDM/vocabulary version + source descriptors. One row per metadata fact.
+    columns:
+      - name: metadata_id
+        tests: [unique, not_null]
+  - name: source_to_concept_map
+    description: Custom source->standard mappings used by the ETL (from custom_mapping seed).
+    columns:
+      - name: source_code
+        tests: [not_null]
+      - name: target_concept_id
+        tests: [not_null]
+  - name: payer_plan_period
+    description: One period per hospital admission; payer from admissions.insurance.
+    columns:
+      - name: payer_plan_period_id
+        tests: [unique, not_null]
+      - name: person_id
+        tests: [not_null]
+  - name: cost
+    description: One row per DRG code linked to its visit. Money columns NULL (MIMIC has no amounts); drg_concept_id mapped.
+    columns:
+      - name: cost_id
+        tests: [unique, not_null]
+      - name: cost_event_id
+        tests: [not_null]
+  - name: episode
+    description: One episode per ICU stay (ICU-careunit visit_detail rows).
+    columns:
+      - name: episode_id
+        tests: [unique, not_null]
+      - name: person_id
+        tests: [not_null]
+  - name: episode_event
+    description: Links each ICU episode to its source visit_detail row.
+    columns:
+      - name: episode_id
+        tests: [not_null]
+      - name: event_id
+        tests: [not_null]
+  - name: note_nlp
+    description: Dictionary-NER clinical-term extraction over omop.note (incremental, batched).
+    columns:
+      - name: note_nlp_id
+        tests: [unique, not_null]
+      - name: note_id
+        tests: [not_null]

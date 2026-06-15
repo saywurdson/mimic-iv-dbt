@@ -1,0 +1,8 @@
+insurance,payer_concept_id
+Medicare,280
+Medicaid,289
+Private,327
+Government,312
+Self Pay,436
+Other,0
+No charge,0

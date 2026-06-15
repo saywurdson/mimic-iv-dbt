@@ -2,8 +2,10 @@
 
 Connects read-only to the DuckDB built by dbt and renders the clinical KPI marts
 (the `marts.kpi_*` tables) as critical-care summary views: cohort size, outcomes
-(mortality, readmission, length of stay), demographics, and the most common
-conditions, drugs, procedures, and measurements.
+(mortality, readmission, length of stay), demographics, the most common
+conditions, drugs, procedures, and measurements, plus Emergency Department flow
+(visits, triage acuity, disposition, chief complaints) and payer/DRG billing
+breakdowns sourced from the MIMIC-IV-ED module and the cost/payer OMOP tables.
 
 The marts pre-compute every aggregate, so this app only reads small summary
 tables rather than scanning the raw OMOP clinical tables. Build them with
@@ -233,3 +235,100 @@ with c1:
 with c2:
     top_concept_chart(DB_PATH, "kpi_top_drugs", "Top drugs")
     top_concept_chart(DB_PATH, "kpi_top_measurements", "Top measurements")
+
+st.divider()
+
+# Emergency Department -------------------------------------------------------
+# Sourced from the MIMIC-IV-ED module (kpi_ed_* marts). The whole section is
+# skipped with a hint when those marts are absent (e.g. the ED source data was
+# not present at build time), so the rest of the dashboard still renders.
+st.subheader("Emergency Department")
+ed_summary = mart(DB_PATH, "kpi_ed_summary")
+if ed_summary.empty:
+    st.info(
+        "ED marts not found. They come from the MIMIC-IV-ED module — rebuild with "
+        "`uv run python mimiciv.py build` once `data/mimiciv/ed/` is present."
+    )
+else:
+    e = ed_summary.iloc[0]
+    ed_cards = [
+        ("ED visits", f"{int(e.n_ed_visits):,}"),
+        ("ED patients", f"{int(e.n_ed_patients):,}"),
+        ("ED → inpatient", f"{int(e.n_ed_to_inpatient):,}"),
+        ("ED → inpatient rate", fmt(e.ed_to_inpatient_pct, "percent") if pd.notna(e.ed_to_inpatient_pct) else "N/A"),
+        ("Median ED stay", f"{e.ed_los_hours_median:.1f} h" if pd.notna(e.ed_los_hours_median) else "N/A"),
+    ]
+    for col, (label, value) in zip(st.columns(len(ed_cards)), ed_cards):
+        col.metric(label, value)
+
+    breakdowns = mart(DB_PATH, "kpi_ed_breakdowns")
+    b1, b2, b3 = st.columns(3)
+
+    with b1:
+        st.markdown("**Triage acuity** (1 = most urgent)")
+        a = breakdowns[breakdowns["dimension"] == "acuity"].sort_values("category")
+        if not a.empty:
+            st.plotly_chart(
+                px.bar(
+                    a,
+                    x="category",
+                    y="n_visits",
+                    labels={"category": "acuity", "n_visits": "ED stays"},
+                ),
+                width="stretch",
+            )
+
+    with b2:
+        st.markdown("**Disposition**")
+        d = breakdowns[breakdowns["dimension"] == "disposition"]
+        if not d.empty:
+            st.plotly_chart(
+                px.pie(d, names="category", values="n_visits", hole=0.4),
+                width="stretch",
+            )
+
+    with b3:
+        st.markdown("**Arrival transport**")
+        t = breakdowns[breakdowns["dimension"] == "arrival_transport"]
+        if not t.empty:
+            st.plotly_chart(
+                px.pie(t, names="category", values="n_visits", hole=0.4),
+                width="stretch",
+            )
+
+    st.markdown("**Top chief complaints**")
+    cc = mart(DB_PATH, "kpi_ed_chief_complaints")
+    if cc.empty:
+        st.write(f"`{MARTS_SCHEMA}.kpi_ed_chief_complaints` not found.")
+    else:
+        cc = cc.sort_values("n_visits", ascending=False).head(15)
+        st.plotly_chart(
+            px.bar(
+                cc.sort_values("n_visits"),
+                x="n_visits",
+                y="chief_complaint",
+                orientation="h",
+                labels={"n_visits": "ED stays", "chief_complaint": ""},
+            ),
+            width="stretch",
+        )
+
+st.divider()
+
+# Payer mix and DRG billing --------------------------------------------------
+p1, p2 = st.columns(2)
+
+with p1:
+    st.subheader("Payer mix")
+    st.caption("Share of hospital admissions by primary insurance.")
+    payer = mart(DB_PATH, "kpi_payer_mix")
+    if payer.empty:
+        st.write(f"`{MARTS_SCHEMA}.kpi_payer_mix` not found.")
+    else:
+        st.plotly_chart(
+            px.pie(payer, names="payer", values="n_admissions", hole=0.4),
+            width="stretch",
+        )
+
+with p2:
+    top_concept_chart(DB_PATH, "kpi_top_drg", "Top DRGs")

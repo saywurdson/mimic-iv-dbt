@@ -1,4 +1,4 @@
--- visit_detail rows from transfers (with hadm_id), ER admissions, and services.
+-- visit_detail rows from transfers (with hadm_id) and services. (ER admissions retired -> ED module.)
 WITH rule_transfers AS (
     SELECT
         src.subject_id, src.hadm_id, src.date_id,
@@ -13,18 +13,8 @@ WITH rule_transfers AS (
     FROM {{ ref('lk_transfers_clean') }} src
     WHERE src.hadm_id IS NOT NULL
 ),
-rule_er AS (
-    SELECT
-        src.subject_id, src.hadm_id, CAST(src.start_datetime AS DATE) AS date_id,
-        src.start_datetime,
-        CAST(NULL AS TIMESTAMP)                         AS end_datetime,
-        CAST(src.subject_id AS VARCHAR) || '|' || CAST(src.hadm_id AS VARCHAR) AS source_value,
-        src.admission_type                              AS current_location,
-        'admissions'                                    AS unit_id,
-        src.load_table_id
-    FROM {{ ref('lk_admissions_clean') }} src
-    WHERE src.is_er_admission
-),
+-- rule_er retired: ED encounters now come from the dedicated MIMIC-IV-ED module as visit_occurrence (9203),
+-- so the edregtime-derived ER visit_detail is dropped to avoid representing the ED stay twice.
 rule_services AS (
     SELECT
         src.subject_id, src.hadm_id, CAST(src.start_datetime AS DATE) AS date_id,
@@ -40,7 +30,6 @@ rule_services AS (
 ),
 unioned AS (
     SELECT * FROM rule_transfers
-    UNION ALL SELECT * FROM rule_er
     UNION ALL SELECT * FROM rule_services
 )
 SELECT
